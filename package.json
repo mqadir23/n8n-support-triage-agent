@@ -1,0 +1,19 @@
+{
+  "name": "n8n-support-triage-agent",
+  "version": "1.0.0",
+  "description": "n8n workflow that triages support tickets with an LLM agent, tools, a validation retry loop and monitoring",
+  "private": true,
+  "scripts": {
+    "build": "tsc",
+    "test": "tsc && node --test \"dist/**/*.test.js\"",
+    "build:workflow": "node scripts/build-workflow.mjs",
+    "mock:crm": "node services/mock-crm/server.js",
+    "mock:llm": "node services/mock-llm/server.js",
+    "credentials": "node --env-file=.env scripts/make-credentials.mjs",
+    "samples": "node --env-file=.env scripts/run-samples.mjs"
+  },
+  "devDependencies": {
+    "@types/node": "^22.0.0",
+    "typescript": "^5.6.0"
+  }
+}

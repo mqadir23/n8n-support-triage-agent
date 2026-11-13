@@ -1,0 +1,50 @@
+[
+  {
+    "name": "Shipping question, known customer",
+    "ticket": {
+      "customer_email": "amina.khan@example.com",
+      "subject": "Where is my order?",
+      "body": "Hi, I ordered a Classroom Display 65 inch six days ago. Can you tell me where my order is and when it will arrive? Thanks."
+    }
+  },
+  {
+    "name": "Billing, angry customer, high priority",
+    "ticket": {
+      "customer_email": "omar.saeed@example.com",
+      "subject": "Refund for cancelled order",
+      "body": "This is unacceptable. I cancelled my order nine days ago and I am still waiting for my refund. I want my payment back."
+    }
+  },
+  {
+    "name": "Enterprise customer, must reach a human",
+    "ticket": {
+      "customer_email": "priya.nair@example.com",
+      "subject": "Display will not turn on in two classrooms",
+      "body": "Two of our new displays show no picture and the status light is red. This is urgent, classes start tomorrow."
+    }
+  },
+  {
+    "name": "Model returns prose first, validator forces a retry",
+    "ticket": {
+      "customer_email": "luca.bianchi@example.com",
+      "subject": "Question about my order [force-invalid]",
+      "body": "I am wondering how long shipping takes for my processing order."
+    }
+  },
+  {
+    "name": "Low confidence first, confidence floor forces a retry",
+    "ticket": {
+      "customer_email": "amina.khan@example.com",
+      "subject": "Password reset email never arrived [low-confidence]",
+      "body": "I tried to log in and asked for a password reset but nothing arrived."
+    }
+  },
+  {
+    "name": "Invalid input is rejected before the LLM is called",
+    "ticket": {
+      "customer_email": "not-an-email",
+      "subject": "",
+      "body": "hi"
+    }
+  }
+]

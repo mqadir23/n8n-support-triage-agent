@@ -1,0 +1,839 @@
+{
+  "id": "triageMainWf0001",
+  "name": "Support Ticket Triage Agent",
+  "active": true,
+  "nodes": [
+    {
+      "id": "000000n1-0000-4000-8000-000000000000",
+      "name": "Webhook",
+      "type": "n8n-nodes-base.webhook",
+      "typeVersion": 2.2,
+      "position": [
+        0,
+        300
+      ],
+      "parameters": {
+        "httpMethod": "POST",
+        "path": "triage",
+        "authentication": "headerAuth",
+        "responseMode": "responseNode",
+        "options": {}
+      },
+      "webhookId": "a1b2c3d4-0000-4000-8000-000000000001",
+      "credentials": {
+        "httpHeaderAuth": {
+          "id": "cred-webhook-auth",
+          "name": "Triage webhook token"
+        }
+      }
+    },
+    {
+      "id": "000000n2-0000-4000-8000-000000000000",
+      "name": "Validate Input",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        220,
+        300
+      ],
+      "parameters": {
+        "jsCode": "const EMAIL = /^[^\\s@]+@[^\\s@]+\\.[^\\s@]+$/;\nconst body = $json.body || {};\nconst errors = [];\nconst email = typeof body.customer_email === 'string' ? body.customer_email.trim().toLowerCase() : '';\nconst subject = typeof body.subject === 'string' ? body.subject.trim() : '';\nconst text = typeof body.body === 'string' ? body.body.trim() : '';\nif (!EMAIL.test(email)) errors.push('customer_email must be a valid email address.');\nif (subject.length < 3 || subject.length > 200) errors.push('subject must be 3 to 200 characters.');\nif (text.length < 10 || text.length > 5000) errors.push('body must be 10 to 5000 characters.');\nconst id = 'T-' + Date.now().toString(36).toUpperCase() + Math.random().toString(36).slice(2, 6).toUpperCase();\nreturn [{ json: { valid: errors.length === 0, errors, ticket: { id, customer_email: email, subject, body: text } } }];"
+      }
+    },
+    {
+      "id": "000000n3-0000-4000-8000-000000000000",
+      "name": "Input Valid?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2.2,
+      "position": [
+        440,
+        300
+      ],
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "strict",
+            "version": 2
+          },
+          "conditions": [
+            {
+              "id": "c1",
+              "leftValue": "={{ $json.valid }}",
+              "rightValue": true,
+              "operator": {
+                "type": "boolean",
+                "operation": "true",
+                "singleValue": true
+              }
+            }
+          ],
+          "combinator": "and"
+        },
+        "options": {}
+      }
+    },
+    {
+      "id": "000000n4-0000-4000-8000-000000000000",
+      "name": "Reject Invalid",
+      "type": "n8n-nodes-base.respondToWebhook",
+      "typeVersion": 1.5,
+      "position": [
+        660,
+        520
+      ],
+      "parameters": {
+        "respondWith": "json",
+        "responseBody": "={{ { error: \"invalid_request\", details: $json.errors } }}",
+        "options": {
+          "responseCode": 400
+        }
+      }
+    },
+    {
+      "id": "000000n5-0000-4000-8000-000000000000",
+      "name": "Insert Ticket",
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 2.6,
+      "position": [
+        660,
+        200
+      ],
+      "parameters": {
+        "operation": "executeQuery",
+        "query": "INSERT INTO tickets (id, customer_email, subject, body) VALUES ($1, $2, $3, $4) RETURNING id",
+        "options": {
+          "queryReplacement": "={{ [$json.ticket.id, $json.ticket.customer_email, $json.ticket.subject, $json.ticket.body] }}"
+        }
+      },
+      "credentials": {
+        "postgres": {
+          "id": "cred-triage-pg",
+          "name": "Triage Postgres"
+        }
+      }
+    },
+    {
+      "id": "000000n6-0000-4000-8000-000000000000",
+      "name": "Start Triage",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        880,
+        200
+      ],
+      "parameters": {
+        "jsCode": "return [{ json: { ticket: $('Validate Input').item.json.ticket, attempt: 1, feedback: '', startedAt: Date.now() } }];"
+      }
+    },
+    {
+      "id": "000000n7-0000-4000-8000-000000000000",
+      "name": "Build Prompt",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        1100,
+        300
+      ],
+      "parameters": {
+        "jsCode": "const s = $json;\nconst t = s.ticket;\nlet prompt = 'Customer email: ' + t.customer_email + '\\nSubject: ' + t.subject + '\\nMessage:\\n' + t.body;\nif (s.feedback) prompt += '\\n\\n' + s.feedback;\nreturn [{ json: { ...s, prompt } }];"
+      }
+    },
+    {
+      "id": "000000n8-0000-4000-8000-000000000000",
+      "name": "Triage Agent",
+      "type": "@n8n/n8n-nodes-langchain.agent",
+      "typeVersion": 3.1,
+      "position": [
+        1320,
+        300
+      ],
+      "parameters": {
+        "promptType": "define",
+        "text": "={{ $json.prompt }}",
+        "hasOutputParser": false,
+        "options": {
+          "systemMessage": "You are a support ticket triage agent for a B2B hardware company.\n\nFor every ticket:\n1. Call the customer lookup tool with the customer's email to get their plan and recent orders.\n2. Call the knowledge base search tool with a few keywords from the ticket.\n3. Optionally call the CRM tool to see whether the customer already has an open case.\n4. Use only facts returned by the tools. Never invent order details or policies.\n\nThen answer with ONE JSON object and nothing else, with exactly these keys:\n- category: one of billing, technical, shipping, account, general\n- priority: one of low, medium, high, urgent\n- sentiment: one of negative, neutral, positive\n- summary: one sentence, at most 280 characters\n- suggested_reply: a polite draft reply to the customer, 20 to 1200 characters\n- needs_human: true when the customer is on an enterprise plan with an urgent or technical problem, when money or legal risk is involved, or when you are unsure\n- confidence: a number from 0 to 1\n\nDo not wrap the JSON in code fences and do not add any other text.",
+          "maxIterations": 6
+        }
+      },
+      "retryOnFail": true,
+      "maxTries": 3,
+      "waitBetweenTries": 6000
+    },
+    {
+      "id": "000000n9-0000-4000-8000-000000000000",
+      "name": "LLM Chat Model",
+      "type": "@n8n/n8n-nodes-langchain.lmChatOpenAi",
+      "typeVersion": 1.2,
+      "position": [
+        1240,
+        560
+      ],
+      "parameters": {
+        "model": {
+          "__rl": true,
+          "mode": "id",
+          "value": "openai/gpt-oss-120b"
+        },
+        "options": {
+          "temperature": 0,
+          "maxRetries": 2,
+          "timeout": 60000
+        }
+      },
+      "credentials": {
+        "openAiApi": {
+          "id": "cred-llm-provider",
+          "name": "LLM provider (OpenAI compatible)"
+        }
+      }
+    },
+    {
+      "id": "00000n10-0000-4000-8000-000000000000",
+      "name": "Lookup Customer",
+      "type": "n8n-nodes-base.postgresTool",
+      "typeVersion": 2.6,
+      "position": [
+        1380,
+        560
+      ],
+      "parameters": {
+        "descriptionType": "manual",
+        "toolDescription": "Look up a customer by email. Returns name, plan, country and their five most recent orders with status and amount.",
+        "operation": "executeQuery",
+        "query": "SELECT c.name, c.plan, c.country, o.product, o.status AS order_status, o.amount_usd, o.ordered_at\nFROM customers c LEFT JOIN orders o ON o.customer_id = c.id\nWHERE lower(c.email) = lower($1)\nORDER BY o.ordered_at DESC LIMIT 5",
+        "options": {
+          "queryReplacement": "={{ $fromAI('email', 'The customer email address from the ticket', 'string') }}"
+        }
+      },
+      "credentials": {
+        "postgres": {
+          "id": "cred-triage-pg",
+          "name": "Triage Postgres"
+        }
+      }
+    },
+    {
+      "id": "00000n11-0000-4000-8000-000000000000",
+      "name": "Search Knowledge Base",
+      "type": "n8n-nodes-base.postgresTool",
+      "typeVersion": 2.6,
+      "position": [
+        1520,
+        560
+      ],
+      "parameters": {
+        "descriptionType": "manual",
+        "toolDescription": "Full-text search over support knowledge base articles. Pass a few keywords. Returns the three best matching articles.",
+        "operation": "executeQuery",
+        "query": "SELECT title, left(body, 500) AS excerpt\nFROM kb_articles\nWHERE tsv @@ plainto_tsquery('english', $1)\nORDER BY ts_rank(tsv, plainto_tsquery('english', $1)) DESC LIMIT 3",
+        "options": {
+          "queryReplacement": "={{ $fromAI('keywords', 'Two to five keywords describing the problem', 'string') }}"
+        }
+      },
+      "credentials": {
+        "postgres": {
+          "id": "cred-triage-pg",
+          "name": "Triage Postgres"
+        }
+      }
+    },
+    {
+      "id": "00000n12-0000-4000-8000-000000000000",
+      "name": "CRM Customer Record",
+      "type": "n8n-nodes-base.httpRequestTool",
+      "typeVersion": 4.2,
+      "position": [
+        1660,
+        560
+      ],
+      "parameters": {
+        "toolDescription": "Fetch the CRM record for a customer, including account manager and open cases. Pass the customer email.",
+        "method": "GET",
+        "url": "http://mock-crm:4010/customers/by-email",
+        "authentication": "genericCredentialType",
+        "genericAuthType": "httpHeaderAuth",
+        "sendQuery": true,
+        "specifyQuery": "keypair",
+        "queryParameters": {
+          "parameters": [
+            {
+              "name": "email",
+              "value": "={{ $fromAI('email', 'Customer email address', 'string') }}"
+            }
+          ]
+        },
+        "options": {}
+      },
+      "credentials": {
+        "httpHeaderAuth": {
+          "id": "cred-crm-token",
+          "name": "Mock CRM token"
+        }
+      }
+    },
+    {
+      "id": "00000n13-0000-4000-8000-000000000000",
+      "name": "Validate Output",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        1560,
+        300
+      ],
+      "parameters": {
+        "jsCode": "/**\n * Validation and cost helpers for the triage workflow.\n *\n * This file is compiled to dist/triage.js and embedded into the n8n Code nodes\n * by scripts/build-workflow.mjs, so the exact same logic is unit tested here and\n * runs inside the workflow.\n */\nconst CATEGORIES = ['billing', 'technical', 'shipping', 'account', 'general'];\nconst PRIORITIES = ['low', 'medium', 'high', 'urgent'];\nconst SENTIMENTS = ['negative', 'neutral', 'positive'];\n/**\n * Pull a JSON object out of model text. Models often wrap JSON in markdown\n * fences or add a sentence before it, so try a few strategies in order.\n */\nfunction extractJson(text) {\n    if (typeof text !== 'string')\n        return null;\n    const trimmed = text.trim();\n    const candidates = [trimmed];\n    const fenced = trimmed.match(/```(?:json)?\\s*([\\s\\S]*?)```/i);\n    if (fenced)\n        candidates.push(fenced[1].trim());\n    const first = trimmed.indexOf('{');\n    const last = trimmed.lastIndexOf('}');\n    if (first !== -1 && last > first)\n        candidates.push(trimmed.slice(first, last + 1));\n    for (const candidate of candidates) {\n        try {\n            const parsed = JSON.parse(candidate);\n            if (parsed !== null && typeof parsed === 'object' && !Array.isArray(parsed))\n                return parsed;\n        }\n        catch {\n            // try the next strategy\n        }\n    }\n    return null;\n}\nfunction isOneOf(value, allowed) {\n    return typeof value === 'string' && allowed.includes(value);\n}\n/** Check a parsed model answer against the triage contract and report every problem found. */\nfunction validateTriage(raw, options = {}) {\n    const minConfidence = options.minConfidence ?? 0.6;\n    const maxSummaryChars = options.maxSummaryChars ?? 280;\n    const maxReplyChars = options.maxReplyChars ?? 1200;\n    const errors = [];\n    if (raw === null || typeof raw !== 'object' || Array.isArray(raw)) {\n        return { valid: false, errors: ['The answer must be a single JSON object.'] };\n    }\n    const obj = raw;\n    if (!isOneOf(obj.category, CATEGORIES))\n        errors.push(`category must be one of: ${CATEGORIES.join(', ')}.`);\n    if (!isOneOf(obj.priority, PRIORITIES))\n        errors.push(`priority must be one of: ${PRIORITIES.join(', ')}.`);\n    if (!isOneOf(obj.sentiment, SENTIMENTS))\n        errors.push(`sentiment must be one of: ${SENTIMENTS.join(', ')}.`);\n    if (typeof obj.summary !== 'string' || obj.summary.trim().length === 0) {\n        errors.push('summary must be a non-empty string.');\n    }\n    else if (obj.summary.length > maxSummaryChars) {\n        errors.push(`summary must be at most ${maxSummaryChars} characters.`);\n    }\n    if (typeof obj.suggested_reply !== 'string' || obj.suggested_reply.trim().length < 20) {\n        errors.push('suggested_reply must be a string of at least 20 characters.');\n    }\n    else if (obj.suggested_reply.length > maxReplyChars) {\n        errors.push(`suggested_reply must be at most ${maxReplyChars} characters.`);\n    }\n    if (typeof obj.needs_human !== 'boolean')\n        errors.push('needs_human must be true or false.');\n    if (typeof obj.confidence !== 'number' || Number.isNaN(obj.confidence) || obj.confidence < 0 || obj.confidence > 1) {\n        errors.push('confidence must be a number between 0 and 1.');\n    }\n    else if (obj.confidence < minConfidence) {\n        errors.push(`confidence ${obj.confidence} is below the minimum of ${minConfidence}; re-check the customer and knowledge base data.`);\n    }\n    if (errors.length > 0)\n        return { valid: false, errors };\n    return {\n        valid: true,\n        errors: [],\n        result: {\n            category: obj.category,\n            priority: obj.priority,\n            sentiment: obj.sentiment,\n            summary: obj.summary.trim(),\n            suggested_reply: obj.suggested_reply.trim(),\n            needs_human: obj.needs_human,\n            confidence: Math.round(obj.confidence * 100) / 100,\n        },\n    };\n}\n/** Turn validation errors into a feedback block that is appended to the retry prompt. */\nfunction buildFeedback(errors) {\n    const lines = errors.map((e, i) => `${i + 1}. ${e}`);\n    return [\n        'FEEDBACK: your previous answer was rejected by the validator.',\n        ...lines,\n        'Return only one corrected JSON object with exactly these keys: category, priority, sentiment, summary, suggested_reply, needs_human, confidence.',\n    ].join('\\n');\n}\n/** Rough token estimate (about 4 characters per token for English). Used only for monitoring. */\nfunction estimateTokens(text) {\n    return Math.ceil((text || '').length / 4);\n}\nfunction estimateCostUsd(promptTokens, outputTokens, rates) {\n    const cost = (promptTokens * rates.inputPerMillion + outputTokens * rates.outputPerMillion) / 1000000;\n    return Math.round(cost * 1000000) / 1000000;\n}\n/** Decide what happens after a validation pass. Pure function so the loop logic is testable. */\nfunction nextStep(args) {\n    if (!args.valid)\n        return args.attempt < args.maxAttempts ? 'retry' : 'give_up';\n    return args.needsHuman ? 'escalate' : 'finish';\n}\n\nconst MAX_ATTEMPTS = 3;\nconst MIN_CONFIDENCE = 0.6;\nconst RATES = {\"inputPerMillion\":0.59,\"outputPerMillion\":0.79};\nconst MODEL = \"openai/gpt-oss-120b\";\nconst input = $('Build Prompt').item.json;\nconst raw = $json.output;\nconst parsed = extractJson(raw);\nconst check = validateTriage(parsed, { minConfidence: MIN_CONFIDENCE });\nconst errors = check.valid ? [] : (parsed === null\n  ? ['The answer was not valid JSON. Return only a JSON object, with no prose and no code fences.']\n  : check.errors);\nconst step = nextStep({ valid: check.valid, attempt: input.attempt, maxAttempts: MAX_ATTEMPTS, needsHuman: check.result ? check.result.needs_human : false });\nconst promptTokens = estimateTokens(input.prompt);\nconst outputTokens = estimateTokens(typeof raw === 'string' ? raw : JSON.stringify(raw));\nreturn [{ json: {\n  ticket: input.ticket,\n  attempt: input.attempt,\n  step,\n  valid: check.valid,\n  errors,\n  result: check.result || null,\n  run: {\n    model: MODEL,\n    latency_ms: Date.now() - input.startedAt,\n    est_prompt_tokens: promptTokens,\n    est_output_tokens: outputTokens,\n    est_cost_usd: estimateCostUsd(promptTokens, outputTokens, RATES),\n  },\n} }];"
+      }
+    },
+    {
+      "id": "00000n14-0000-4000-8000-000000000000",
+      "name": "Log LLM Run",
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 2.6,
+      "position": [
+        1780,
+        300
+      ],
+      "parameters": {
+        "operation": "executeQuery",
+        "query": "INSERT INTO llm_runs (ticket_id, model, attempt, latency_ms, valid, validation_errors, est_prompt_tokens, est_output_tokens, est_cost_usd)\nVALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9) RETURNING id",
+        "options": {
+          "queryReplacement": "={{ [$json.ticket.id, $json.run.model, $json.attempt, $json.run.latency_ms, $json.valid, $json.errors.join(' | '), $json.run.est_prompt_tokens, $json.run.est_output_tokens, $json.run.est_cost_usd] }}"
+        }
+      },
+      "credentials": {
+        "postgres": {
+          "id": "cred-triage-pg",
+          "name": "Triage Postgres"
+        }
+      }
+    },
+    {
+      "id": "00000n15-0000-4000-8000-000000000000",
+      "name": "Restore State",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        2000,
+        300
+      ],
+      "parameters": {
+        "jsCode": "return [{ json: $('Validate Output').item.json }];"
+      }
+    },
+    {
+      "id": "00000n16-0000-4000-8000-000000000000",
+      "name": "Retry?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2.2,
+      "position": [
+        2220,
+        300
+      ],
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "strict",
+            "version": 2
+          },
+          "conditions": [
+            {
+              "id": "c2",
+              "leftValue": "={{ $json.step }}",
+              "rightValue": "retry",
+              "operator": {
+                "type": "string",
+                "operation": "equals"
+              }
+            }
+          ],
+          "combinator": "and"
+        },
+        "options": {}
+      }
+    },
+    {
+      "id": "00000n17-0000-4000-8000-000000000000",
+      "name": "Next Attempt",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        2440,
+        120
+      ],
+      "parameters": {
+        "jsCode": "/**\n * Validation and cost helpers for the triage workflow.\n *\n * This file is compiled to dist/triage.js and embedded into the n8n Code nodes\n * by scripts/build-workflow.mjs, so the exact same logic is unit tested here and\n * runs inside the workflow.\n */\nconst CATEGORIES = ['billing', 'technical', 'shipping', 'account', 'general'];\nconst PRIORITIES = ['low', 'medium', 'high', 'urgent'];\nconst SENTIMENTS = ['negative', 'neutral', 'positive'];\n/**\n * Pull a JSON object out of model text. Models often wrap JSON in markdown\n * fences or add a sentence before it, so try a few strategies in order.\n */\nfunction extractJson(text) {\n    if (typeof text !== 'string')\n        return null;\n    const trimmed = text.trim();\n    const candidates = [trimmed];\n    const fenced = trimmed.match(/```(?:json)?\\s*([\\s\\S]*?)```/i);\n    if (fenced)\n        candidates.push(fenced[1].trim());\n    const first = trimmed.indexOf('{');\n    const last = trimmed.lastIndexOf('}');\n    if (first !== -1 && last > first)\n        candidates.push(trimmed.slice(first, last + 1));\n    for (const candidate of candidates) {\n        try {\n            const parsed = JSON.parse(candidate);\n            if (parsed !== null && typeof parsed === 'object' && !Array.isArray(parsed))\n                return parsed;\n        }\n        catch {\n            // try the next strategy\n        }\n    }\n    return null;\n}\nfunction isOneOf(value, allowed) {\n    return typeof value === 'string' && allowed.includes(value);\n}\n/** Check a parsed model answer against the triage contract and report every problem found. */\nfunction validateTriage(raw, options = {}) {\n    const minConfidence = options.minConfidence ?? 0.6;\n    const maxSummaryChars = options.maxSummaryChars ?? 280;\n    const maxReplyChars = options.maxReplyChars ?? 1200;\n    const errors = [];\n    if (raw === null || typeof raw !== 'object' || Array.isArray(raw)) {\n        return { valid: false, errors: ['The answer must be a single JSON object.'] };\n    }\n    const obj = raw;\n    if (!isOneOf(obj.category, CATEGORIES))\n        errors.push(`category must be one of: ${CATEGORIES.join(', ')}.`);\n    if (!isOneOf(obj.priority, PRIORITIES))\n        errors.push(`priority must be one of: ${PRIORITIES.join(', ')}.`);\n    if (!isOneOf(obj.sentiment, SENTIMENTS))\n        errors.push(`sentiment must be one of: ${SENTIMENTS.join(', ')}.`);\n    if (typeof obj.summary !== 'string' || obj.summary.trim().length === 0) {\n        errors.push('summary must be a non-empty string.');\n    }\n    else if (obj.summary.length > maxSummaryChars) {\n        errors.push(`summary must be at most ${maxSummaryChars} characters.`);\n    }\n    if (typeof obj.suggested_reply !== 'string' || obj.suggested_reply.trim().length < 20) {\n        errors.push('suggested_reply must be a string of at least 20 characters.');\n    }\n    else if (obj.suggested_reply.length > maxReplyChars) {\n        errors.push(`suggested_reply must be at most ${maxReplyChars} characters.`);\n    }\n    if (typeof obj.needs_human !== 'boolean')\n        errors.push('needs_human must be true or false.');\n    if (typeof obj.confidence !== 'number' || Number.isNaN(obj.confidence) || obj.confidence < 0 || obj.confidence > 1) {\n        errors.push('confidence must be a number between 0 and 1.');\n    }\n    else if (obj.confidence < minConfidence) {\n        errors.push(`confidence ${obj.confidence} is below the minimum of ${minConfidence}; re-check the customer and knowledge base data.`);\n    }\n    if (errors.length > 0)\n        return { valid: false, errors };\n    return {\n        valid: true,\n        errors: [],\n        result: {\n            category: obj.category,\n            priority: obj.priority,\n            sentiment: obj.sentiment,\n            summary: obj.summary.trim(),\n            suggested_reply: obj.suggested_reply.trim(),\n            needs_human: obj.needs_human,\n            confidence: Math.round(obj.confidence * 100) / 100,\n        },\n    };\n}\n/** Turn validation errors into a feedback block that is appended to the retry prompt. */\nfunction buildFeedback(errors) {\n    const lines = errors.map((e, i) => `${i + 1}. ${e}`);\n    return [\n        'FEEDBACK: your previous answer was rejected by the validator.',\n        ...lines,\n        'Return only one corrected JSON object with exactly these keys: category, priority, sentiment, summary, suggested_reply, needs_human, confidence.',\n    ].join('\\n');\n}\n/** Rough token estimate (about 4 characters per token for English). Used only for monitoring. */\nfunction estimateTokens(text) {\n    return Math.ceil((text || '').length / 4);\n}\nfunction estimateCostUsd(promptTokens, outputTokens, rates) {\n    const cost = (promptTokens * rates.inputPerMillion + outputTokens * rates.outputPerMillion) / 1000000;\n    return Math.round(cost * 1000000) / 1000000;\n}\n/** Decide what happens after a validation pass. Pure function so the loop logic is testable. */\nfunction nextStep(args) {\n    if (!args.valid)\n        return args.attempt < args.maxAttempts ? 'retry' : 'give_up';\n    return args.needsHuman ? 'escalate' : 'finish';\n}\n\nconst s = $json;\nreturn [{ json: { ticket: s.ticket, attempt: s.attempt + 1, feedback: buildFeedback(s.errors), startedAt: Date.now() } }];"
+      }
+    },
+    {
+      "id": "00000n18-0000-4000-8000-000000000000",
+      "name": "Finalize State",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        2440,
+        420
+      ],
+      "parameters": {
+        "jsCode": "const s = $json;\nconst status = s.step === 'give_up' ? 'failed' : s.step === 'escalate' ? 'escalated' : 'triaged';\nreturn [{ json: { ...s, final_status: status } }];"
+      }
+    },
+    {
+      "id": "00000n19-0000-4000-8000-000000000000",
+      "name": "Save Result",
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 2.6,
+      "position": [
+        2660,
+        420
+      ],
+      "parameters": {
+        "operation": "executeQuery",
+        "query": "UPDATE tickets SET status = $2, category = $3, priority = $4, sentiment = $5, summary = $6,\n  suggested_reply = $7, needs_human = $8, confidence = $9, attempts = $10, updated_at = now()\nWHERE id = $1 RETURNING id",
+        "options": {
+          "queryReplacement": "={{ [$json.ticket.id, $json.final_status, $json.result?.category ?? null, $json.result?.priority ?? null, $json.result?.sentiment ?? null, $json.result?.summary ?? null, $json.result?.suggested_reply ?? null, $json.result?.needs_human ?? null, $json.result?.confidence ?? null, $json.attempt] }}"
+        }
+      },
+      "credentials": {
+        "postgres": {
+          "id": "cred-triage-pg",
+          "name": "Triage Postgres"
+        }
+      }
+    },
+    {
+      "id": "00000n20-0000-4000-8000-000000000000",
+      "name": "Restore Final State",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        2880,
+        420
+      ],
+      "parameters": {
+        "jsCode": "return [{ json: $('Finalize State').item.json }];"
+      }
+    },
+    {
+      "id": "00000n21-0000-4000-8000-000000000000",
+      "name": "Needs CRM?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2.2,
+      "position": [
+        3100,
+        420
+      ],
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "strict",
+            "version": 2
+          },
+          "conditions": [
+            {
+              "id": "c3",
+              "leftValue": "={{ $json.step }}",
+              "rightValue": "give_up",
+              "operator": {
+                "type": "string",
+                "operation": "notEquals"
+              }
+            }
+          ],
+          "combinator": "and"
+        },
+        "options": {}
+      }
+    },
+    {
+      "id": "00000n22-0000-4000-8000-000000000000",
+      "name": "Build CRM Request",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        3320,
+        320
+      ],
+      "parameters": {
+        "jsCode": "const s = $json;\nconst r = s.result;\nconst isEscalation = s.step === 'escalate';\nconst payload = {\n  ticket_id: s.ticket.id,\n  customer_email: s.ticket.customer_email,\n  subject: s.ticket.subject,\n  category: r.category,\n  priority: r.priority,\n  summary: r.summary,\n  suggested_reply: r.suggested_reply,\n  confidence: r.confidence,\n  reason: isEscalation ? 'Model flagged this ticket for a human agent.' : undefined,\n};\nreturn [{ json: { ...s, crm_path: isEscalation ? '/escalations' : '/cases', crm_payload: payload } }];"
+      }
+    },
+    {
+      "id": "00000n23-0000-4000-8000-000000000000",
+      "name": "Send To CRM",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        3540,
+        320
+      ],
+      "parameters": {
+        "method": "POST",
+        "url": "=http://mock-crm:4010{{ $json.crm_path }}",
+        "authentication": "genericCredentialType",
+        "genericAuthType": "httpHeaderAuth",
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={{ JSON.stringify($json.crm_payload) }}",
+        "options": {
+          "timeout": 15000,
+          "retry": {}
+        }
+      },
+      "credentials": {
+        "httpHeaderAuth": {
+          "id": "cred-crm-token",
+          "name": "Mock CRM token"
+        }
+      },
+      "retryOnFail": true,
+      "maxTries": 3,
+      "waitBetweenTries": 1000
+    },
+    {
+      "id": "00000n24-0000-4000-8000-000000000000",
+      "name": "Save CRM Id",
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 2.6,
+      "position": [
+        3760,
+        320
+      ],
+      "parameters": {
+        "operation": "executeQuery",
+        "query": "UPDATE tickets SET crm_case_id = $2 WHERE id = $1 RETURNING id",
+        "options": {
+          "queryReplacement": "={{ [$('Build CRM Request').item.json.ticket.id, $('Send To CRM').item.json.case_id ?? $('Send To CRM').item.json.escalation_id ?? null] }}"
+        }
+      },
+      "credentials": {
+        "postgres": {
+          "id": "cred-triage-pg",
+          "name": "Triage Postgres"
+        }
+      }
+    },
+    {
+      "id": "00000n25-0000-4000-8000-000000000000",
+      "name": "Respond Success",
+      "type": "n8n-nodes-base.respondToWebhook",
+      "typeVersion": 1.5,
+      "position": [
+        3980,
+        320
+      ],
+      "parameters": {
+        "respondWith": "json",
+        "responseBody": "={{ { ticket_id: $('Build CRM Request').item.json.ticket.id, status: $('Build CRM Request').item.json.final_status, attempts: $('Build CRM Request').item.json.attempt, result: $('Build CRM Request').item.json.result, crm_case_id: $('Send To CRM').item.json.case_id ?? $('Send To CRM').item.json.escalation_id ?? null } }}",
+        "options": {
+          "responseCode": 200
+        }
+      }
+    },
+    {
+      "id": "00000n26-0000-4000-8000-000000000000",
+      "name": "Respond Failed",
+      "type": "n8n-nodes-base.respondToWebhook",
+      "typeVersion": 1.5,
+      "position": [
+        3320,
+        560
+      ],
+      "parameters": {
+        "respondWith": "json",
+        "responseBody": "={{ { ticket_id: $json.ticket.id, status: 'failed', attempts: $json.attempt, errors: $json.errors } }}",
+        "options": {
+          "responseCode": 422
+        }
+      }
+    }
+  ],
+  "connections": {
+    "Webhook": {
+      "main": [
+        [
+          {
+            "node": "Validate Input",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Validate Input": {
+      "main": [
+        [
+          {
+            "node": "Input Valid?",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Input Valid?": {
+      "main": [
+        [
+          {
+            "node": "Insert Ticket",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Reject Invalid",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Insert Ticket": {
+      "main": [
+        [
+          {
+            "node": "Start Triage",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Start Triage": {
+      "main": [
+        [
+          {
+            "node": "Build Prompt",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Build Prompt": {
+      "main": [
+        [
+          {
+            "node": "Triage Agent",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "LLM Chat Model": {
+      "ai_languageModel": [
+        [
+          {
+            "node": "Triage Agent",
+            "type": "ai_languageModel",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Lookup Customer": {
+      "ai_tool": [
+        [
+          {
+            "node": "Triage Agent",
+            "type": "ai_tool",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Search Knowledge Base": {
+      "ai_tool": [
+        [
+          {
+            "node": "Triage Agent",
+            "type": "ai_tool",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "CRM Customer Record": {
+      "ai_tool": [
+        [
+          {
+            "node": "Triage Agent",
+            "type": "ai_tool",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Triage Agent": {
+      "main": [
+        [
+          {
+            "node": "Validate Output",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Validate Output": {
+      "main": [
+        [
+          {
+            "node": "Log LLM Run",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Log LLM Run": {
+      "main": [
+        [
+          {
+            "node": "Restore State",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Restore State": {
+      "main": [
+        [
+          {
+            "node": "Retry?",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Retry?": {
+      "main": [
+        [
+          {
+            "node": "Next Attempt",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Finalize State",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Next Attempt": {
+      "main": [
+        [
+          {
+            "node": "Build Prompt",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Finalize State": {
+      "main": [
+        [
+          {
+            "node": "Save Result",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Save Result": {
+      "main": [
+        [
+          {
+            "node": "Restore Final State",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Restore Final State": {
+      "main": [
+        [
+          {
+            "node": "Needs CRM?",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Needs CRM?": {
+      "main": [
+        [
+          {
+            "node": "Build CRM Request",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Respond Failed",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Build CRM Request": {
+      "main": [
+        [
+          {
+            "node": "Send To CRM",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Send To CRM": {
+      "main": [
+        [
+          {
+            "node": "Save CRM Id",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Save CRM Id": {
+      "main": [
+        [
+          {
+            "node": "Respond Success",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
+  "settings": {
+    "executionOrder": "v1",
+    "errorWorkflow": "triageErrorWf0001",
+    "saveManualExecutions": true
+  },
+  "pinData": {}
+}

@@ -1,0 +1,74 @@
+# Local stack: Postgres, n8n, a mock CRM and (optionally) a mock LLM.
+#   docker compose up -d                      -> postgres, n8n, mock-crm
+#   docker compose --profile mock up -d       -> also starts mock-llm for key-free testing
+services:
+  postgres:
+    image: postgres:16
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
+      POSTGRES_DB: ${POSTGRES_DB}
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+      - ./db/init.sql:/docker-entrypoint-initdb.d/01-init.sql:ro
+    ports:
+      - "5433:5432"
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER} -d ${POSTGRES_DB}"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+
+  mock-crm:
+    image: node:22-alpine
+    working_dir: /app
+    command: node server.js
+    environment:
+      PORT: "4010"
+      CRM_TOKEN: ${CRM_TOKEN}
+    volumes:
+      - ./services/mock-crm:/app:ro
+    ports:
+      - "4010:4010"
+
+  mock-llm:
+    profiles: ["mock"]
+    image: node:22-alpine
+    working_dir: /app
+    command: node server.js
+    environment:
+      PORT: "4020"
+    volumes:
+      - ./services/mock-llm:/app:ro
+    ports:
+      - "4020:4020"
+
+  n8n:
+    image: docker.n8n.io/n8nio/n8n:2.47.4
+    depends_on:
+      postgres:
+        condition: service_healthy
+    environment:
+      N8N_ENCRYPTION_KEY: ${N8N_ENCRYPTION_KEY}
+      N8N_SECURE_COOKIE: "false"
+      WEBHOOK_URL: http://localhost:5678/
+      GENERIC_TIMEZONE: Asia/Karachi
+    entrypoint: ["/bin/sh", "-c"]
+    command:
+      - >
+        n8n import:credentials --input=/import/credentials/credentials.json &&
+        n8n import:workflow --input=/import/workflows/error-handler.json &&
+        n8n import:workflow --input=/import/workflows/support-triage.json &&
+        n8n publish:workflow --id=triageErrorWf0001 &&
+        n8n publish:workflow --id=triageMainWf0001 &&
+        n8n start
+    ports:
+      - "5678:5678"
+    volumes:
+      - n8n_data:/home/node/.n8n
+      - ./workflows:/import/workflows:ro
+      - ./.n8n-import:/import/credentials:ro
+
+volumes:
+  pgdata:
+  n8n_data:
